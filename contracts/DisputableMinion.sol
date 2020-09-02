@@ -1,4 +1,4 @@
-pragma solidity 0.5.12;
+pragma solidity >=0.5.12;
 
 import "./moloch/Moloch.sol";
 
@@ -17,7 +17,6 @@ contract Minion {
         bool executed;
         bytes data;
         bool isDisputed;
-        uint8 ADRprovider;
     }
     
     struct ADRprovider {
