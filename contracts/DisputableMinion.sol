@@ -17,7 +17,6 @@ contract Minion {
         bool executed;
         bytes data;
         bool isDisputed;
-        uint8 ADRprovider;
     }
     
     struct ADRprovider {
