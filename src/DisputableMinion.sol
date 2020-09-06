@@ -1,7 +1,7 @@
 pragma solidity 0.5.12;
 
-import "./moloch/Moloch.sol";
-// import "https://github.com/raid-guild/moloch-minion/blob/develop/contracts/moloch/Moloch.sol";
+// import "./moloch/Moloch.sol";
+import "https://github.com/raid-guild/moloch-minion/blob/develop/contracts/moloch/Moloch.sol";
 
 interface IArbitrator {
     /**
@@ -42,14 +42,14 @@ interface IArbitrator {
     // function getSubscriptionFees(address _subscriber) external view returns (address recipient, ERC20 feeToken, uint256 feeAmount);
 }
 
-contract Minion {
+contract DisputableMinion {
 
     string public constant MINION_ACTION_DETAILS = '{"isMinion": true, "title":"MINION", "description":"';
 
     Moloch public moloch;
     address public molochApprovedToken;
     uint256 public disputeDelayDuration;
-    enum RulingOptions {RefusedToArbitrate, ProposalInvalid, ProposalValid}
+    enum RulingOptions {RefusedToArbitrate, ProposalInvalid, ProposalValid} // Necessary?
     uint constant numberOfRulingOptions = 2;
     mapping (uint256 => Action) public actions; // proposalId => Action
     mapping (uint256 => uint256) public disputes; // used for rule() method
@@ -75,8 +75,10 @@ contract Minion {
     }
     
     event ActionProposed(uint256 proposalId, address proposer);
+    event ActionProcessed(uint256 proposalId, address processor);
+    event ActionDisputed(uint256 proposalId, address disputant, uint256 disputeId);
+    event ActionRuled(uint256 proposalId, address arbitrator, uint256 ruling);
     event ActionExecuted(uint256 proposalId, address executor);
-
 
     constructor(address _moloch, uint256 _disputeDelayDuration) public {
         moloch = Moloch(_moloch);
@@ -134,7 +136,7 @@ contract Minion {
         return proposalId;
     }
     
-    function processProposal(uint256 _proposalId) public {
+    function processAction(uint256 _proposalId) public {
         Action memory action = actions[_proposalId];
         bool[6] memory flags = moloch.getProposalFlags(_proposalId);
         
@@ -147,9 +149,12 @@ contract Minion {
         
         actions[_proposalId].processed = true;
         actions[_proposalId].processingTime = now;
+        
+        emit ActionProcessed(_proposalId, msg.sender);
     }
     
-    function disputeAction(uint256 _proposalId, uint256 _arbitratorId) public {
+    // Make onlyShareOrLootHolder
+    function disputeAction(uint256 _proposalId, uint256 _arbitratorId) public payable returns(uint256) {
         Action memory action = actions[_proposalId];
         bool[6] memory flags = moloch.getProposalFlags(_proposalId);
         
@@ -159,13 +164,16 @@ contract Minion {
         require(!hasDisputeDelayDurationExpired(action.processingTime));
         
         ADR memory adr = adrs[_arbitratorId];
-        (bool success, bytes memory retData) = adr.addr.call.value(0)(abi.encodeWithSignature(adr.disputeMethod, numberOfRulingOptions, ""));
+        (bool success, bytes memory retData) = adr.addr.call.value(msg.value)(abi.encodeWithSignature(adr.disputeMethod, numberOfRulingOptions, ""));
         require(success, "Minion::call failure");
         uint256 disputeId = parse32BytesToUint256(retData);
-        require(disputes[disputeId] == 0);
+        require(disputes[disputeId] == 0); // 
         actions[_proposalId].disputed = true;
         actions[_proposalId].arbitratorId = _arbitratorId;
         disputes[disputeId] = _proposalId;
+        
+        emit ActionDisputed(_proposalId, msg.sender, disputeId);
+        return disputeId;
     }
     
     function rule(uint256 _disputeID, uint256 _ruling) external { // Aragon
@@ -177,7 +185,8 @@ contract Minion {
         require(adr.addr == msg.sender);              // only allow selected ADR contract
         require(action.disputed);                     // only callable if disputed
         action.disputed = _ruling <= 1;               // no longer disputed if ruling==2
-
+        
+        emit ActionRuled(proposalId, msg.sender, _ruling);
     }
     
     function executeAction(uint256 _proposalId) public returns (bytes memory) {
@@ -191,6 +200,10 @@ contract Minion {
         require(!action.executed, "Minion::action executed");
         require(address(this).balance >= action.value, "Minion::insufficient eth");
         require(flags[2], "Minion::proposal not passed");
+        require(action.processed, "Minion::action not processed");
+        require(!action.disputed, "Minion::action disputed");
+        require(hasDisputeDelayDurationExpired(action.processingTime));
+        
 
         // execute call
         actions[_proposalId].executed = true;
