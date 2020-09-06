@@ -1,0 +1,5 @@
+export ETH_RPC_URL=https://xdai.poanetwork.dev
+export ETH_FROM=0x00189D75477784e01B824fCF9227b3bc0Ac40917
+export ETH_KEYSTORE=/Users/testit/Documents/dev/keystore
+export ETH_GAS_PRICE=1
+export ETH_GAS=10000000
