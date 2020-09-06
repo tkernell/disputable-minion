@@ -3,45 +3,6 @@ pragma solidity 0.5.12;
 // import "./moloch/Moloch.sol";
 import "https://github.com/raid-guild/moloch-minion/blob/develop/contracts/moloch/Moloch.sol";
 
-interface IArbitrator {
-    /**
-    * @dev Create a dispute over the Arbitrable sender with a number of possible rulings
-    * @param _possibleRulings Number of possible rulings allowed for the dispute
-    * @param _metadata Optional metadata that can be used to provide additional information on the dispute to be created
-    * @return Dispute identification number
-    */
-    function createDispute(uint256 _possibleRulings, bytes calldata _metadata) external returns (uint256);
-
-    /**
-    * @dev Close the evidence period of a dispute
-    * @param _disputeId Identification number of the dispute to close its evidence submitting period
-    */
-    function closeEvidencePeriod(uint256 _disputeId) external;
-
-    /**
-    * @dev Execute the Arbitrable associated to a dispute based on its final ruling
-    * @param _disputeId Identification number of the dispute to be executed
-    */
-    function executeRuling(uint256 _disputeId) external;
-
-    /**
-    * @dev Tell the dispute fees information to create a dispute
-    * @return recipient Address where the corresponding dispute fees must be transferred to
-    * @return feeToken ERC20 token used for the fees
-    * @return feeAmount Total amount of fees that must be allowed to the recipient
-    */
-    // function getDisputeFees() external view returns (address recipient, ERC20 feeToken, uint256 feeAmount);
-
-    /**
-    * @dev Tell the subscription fees information for a subscriber to be up-to-date
-    * @param _subscriber Address of the account paying the subscription fees for
-    * @return recipient Address where the corresponding subscriptions fees must be transferred to
-    * @return feeToken ERC20 token used for the subscription fees
-    * @return feeAmount Total amount of fees that must be allowed to the recipient
-    */
-    // function getSubscriptionFees(address _subscriber) external view returns (address recipient, ERC20 feeToken, uint256 feeAmount);
-}
-
 contract DisputableMinion {
 
     string public constant MINION_ACTION_DETAILS = '{"isMinion": true, "title":"MINION", "description":"';
@@ -80,7 +41,7 @@ contract DisputableMinion {
     event ActionRuled(uint256 proposalId, address arbitrator, uint256 ruling);
     event ActionExecuted(uint256 proposalId, address executor);
 
-    constructor(address _moloch, uint256 _disputeDelayDuration) public {
+    constructor(address _moloch, uint256 _disputeDelayDuration, address _ADR_addr, string memory _ADR_disputeMethod, string memory _ADR_details) public {
         moloch = Moloch(_moloch);
         molochApprovedToken = moloch.depositToken();
         disputeDelayDuration = _disputeDelayDuration;
@@ -153,8 +114,8 @@ contract DisputableMinion {
         emit ActionProcessed(_proposalId, msg.sender);
     }
     
-    // Make onlyShareOrLootHolder
     function disputeAction(uint256 _proposalId, uint256 _arbitratorId) public payable returns(uint256) {
+        require(isMember(msg.sender), "Minion::not a member");  // only moloch share or loot holders
         Action memory action = actions[_proposalId];
         bool[6] memory flags = moloch.getProposalFlags(_proposalId);
         
@@ -222,6 +183,11 @@ contract DisputableMinion {
         assembly {parsed := mload(add(data, 32))}
         return(parsed);
     }
+    
+    function isMember(address addr) public view returns(bool) {
+        (address delegateKey, uint256 shares, uint256 loot, bool exists, uint256 highestIndexYesVote, uint256 jailed) = moloch.members(addr);
+        return (shares > 0 || loot > 0);
+    } 
 
     function() external payable { }
 }
