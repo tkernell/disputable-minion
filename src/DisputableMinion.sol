@@ -1,9 +1,17 @@
 pragma solidity 0.5.12;
+// pragma experimental ABIEncoderV2;
 
 // import "./moloch/Moloch.sol";
 import "https://github.com/raid-guild/moloch-minion/blob/develop/contracts/moloch/Moloch.sol";
 
-contract DisputableMinion {
+contract IArbitrableAragon {
+     bytes4 internal constant ARBITRABLE_INTERFACE_ID = bytes4(0x88f3ee69);
+     function supportsInterface(bytes4 _interfaceId) external pure returns (bool) {
+        return _interfaceId == ARBITRABLE_INTERFACE_ID;// || _interfaceId == ERC165_INTERFACE_ID;
+    }
+}
+
+contract DisputableMinion is IArbitrableAragon {
 
     string public constant MINION_ACTION_DETAILS = '{"isMinion": true, "title":"MINION", "description":"';
 
@@ -11,7 +19,7 @@ contract DisputableMinion {
     address public molochApprovedToken;
     uint256 public disputeDelayDuration;
     enum RulingOptions {RefusedToArbitrate, ProposalInvalid, ProposalValid} // Necessary?
-    uint constant numberOfRulingOptions = 2;
+    uint constant numberOfRulingOptions = 2; // RefusedToArbitrate, ProposalInvalid, ProposalValid
     mapping (uint256 => Action) public actions; // proposalId => Action
     mapping (uint256 => uint256) public disputes; // used for rule() method
     ADR[] public adrs;
@@ -31,8 +39,7 @@ contract DisputableMinion {
     }
     struct ADR {
         address addr;
-        string disputeMethod;   // createDispute() or relevant method for ADR chosen
-        string details;         // Can be name, description, or something else
+        bytes4 disputeMethod;   // createDispute() or relevant method for ADR chosen
     }
     
     event ActionProposed(uint256 proposalId, address proposer);
@@ -41,10 +48,26 @@ contract DisputableMinion {
     event ActionRuled(uint256 proposalId, address arbitrator, uint256 ruling);
     event ActionExecuted(uint256 proposalId, address executor);
 
-    constructor(address _moloch, uint256 _disputeDelayDuration, address _ADR_addr, string memory _ADR_disputeMethod, string memory _ADR_details) public {
+    constructor(
+        address _moloch, 
+        uint256 _disputeDelayDuration, 
+        address[] memory _ADR_addr, 
+        bytes4[] memory _ADR_disputeMethod
+        // string memory _ADR_details
+    ) 
+        public 
+    {
+        require(_ADR_addr.length == _ADR_disputeMethod.length);
         moloch = Moloch(_moloch);
         molochApprovedToken = moloch.depositToken();
         disputeDelayDuration = _disputeDelayDuration;
+        // adrs.push(ADR(_ADR_addr, _ADR_disputeMethod));
+        
+        uint8 count=0;
+        while(count < _ADR_addr.length) {
+            adrs.push(ADR(_ADR_addr[count], _ADR_disputeMethod[count]));
+            count++;
+        }
     }
 
     // withdraw funds from the moloch
@@ -110,6 +133,7 @@ contract DisputableMinion {
         
         actions[_proposalId].processed = true;
         actions[_proposalId].processingTime = now;
+        actions[_proposalId].disputable = true;
         
         emit ActionProcessed(_proposalId, msg.sender);
     }
@@ -125,7 +149,7 @@ contract DisputableMinion {
         require(!hasDisputeDelayDurationExpired(action.processingTime));
         
         ADR memory adr = adrs[_arbitratorId];
-        (bool success, bytes memory retData) = adr.addr.call.value(msg.value)(abi.encodeWithSignature(adr.disputeMethod, numberOfRulingOptions, ""));
+        (bool success, bytes memory retData) = adr.addr.call.value(msg.value)(abi.encodePacked(adr.disputeMethod, abi.encode(numberOfRulingOptions, "")));
         require(success, "Minion::call failure");
         uint256 disputeId = parse32BytesToUint256(retData);
         require(disputes[disputeId] == 0); // 
