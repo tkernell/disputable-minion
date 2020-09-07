@@ -3,15 +3,24 @@ pragma solidity 0.5.12;
 // import "./moloch/Moloch.sol";
 import "https://github.com/raid-guild/moloch-minion/blob/develop/contracts/moloch/Moloch.sol";
 
-contract DisputableMinion {
+contract IArbitrableAragon {
+     bytes4 internal constant ARBITRABLE_INTERFACE_ID = bytes4(0x88f3ee69);
+     function supportsInterface(bytes4 _interfaceId) external pure returns (bool) {
+        return _interfaceId == ARBITRABLE_INTERFACE_ID;// || _interfaceId == ERC165_INTERFACE_ID;
+    }
+}
 
+contract DisputableMinion is IArbitrableAragon {
+    using SafeMath for uint256;
+    // --- Constants ---
     string public constant MINION_ACTION_DETAILS = '{"isMinion": true, "title":"MINION", "description":"';
+    uint constant numberOfRulingOptions = 2; // RefusedToArbitrate, ProposalInvalid, ProposalValid
 
+    // --- State and data structures ---
     Moloch public moloch;
     address public molochApprovedToken;
     uint256 public disputeDelayDuration;
     enum RulingOptions {RefusedToArbitrate, ProposalInvalid, ProposalValid} // Necessary?
-    uint constant numberOfRulingOptions = 2;
     mapping (uint256 => Action) public actions; // proposalId => Action
     mapping (uint256 => uint256) public disputes; // used for rule() method
     ADR[] public adrs;
@@ -31,21 +40,39 @@ contract DisputableMinion {
     }
     struct ADR {
         address addr;
-        string disputeMethod;   // createDispute() or relevant method for ADR chosen
-        string details;         // Can be name, description, or something else
+        bytes4 disputeMethod;   // createDispute() or relevant method for ADR chosen
     }
     
+    // --- Events ---
     event ActionProposed(uint256 proposalId, address proposer);
     event ActionProcessed(uint256 proposalId, address processor);
     event ActionDisputed(uint256 proposalId, address disputant, uint256 disputeId);
     event ActionRuled(uint256 proposalId, address arbitrator, uint256 ruling);
     event ActionExecuted(uint256 proposalId, address executor);
 
-    constructor(address _moloch, uint256 _disputeDelayDuration, address _ADR_addr, string memory _ADR_disputeMethod, string memory _ADR_details) public {
+    // --- Constructor ---
+    constructor(
+        address _moloch, 
+        uint256 _disputeDelayDuration, 
+        address[] memory _ADR_addr, 
+        bytes4[] memory _ADR_disputeMethod
+    ) 
+        public 
+    {
+        require(_ADR_addr.length == _ADR_disputeMethod.length);
         moloch = Moloch(_moloch);
         molochApprovedToken = moloch.depositToken();
         disputeDelayDuration = _disputeDelayDuration;
+        
+        uint8 count=0;
+        while(count < _ADR_addr.length) {
+            adrs.push(ADR(_ADR_addr[count], _ADR_disputeMethod[count]));
+            count++;
+        }
     }
+    
+    // --- Fallback function
+    function() external payable { }
 
     // withdraw funds from the moloch
     function doWithdraw(address _token, uint256 _amount) public {
@@ -110,6 +137,7 @@ contract DisputableMinion {
         
         actions[_proposalId].processed = true;
         actions[_proposalId].processingTime = now;
+        actions[_proposalId].disputable = true;
         
         emit ActionProcessed(_proposalId, msg.sender);
     }
@@ -125,7 +153,7 @@ contract DisputableMinion {
         require(!hasDisputeDelayDurationExpired(action.processingTime));
         
         ADR memory adr = adrs[_arbitratorId];
-        (bool success, bytes memory retData) = adr.addr.call.value(msg.value)(abi.encodeWithSignature(adr.disputeMethod, numberOfRulingOptions, ""));
+        (bool success, bytes memory retData) = adr.addr.call.value(msg.value)(abi.encodePacked(adr.disputeMethod, abi.encode(numberOfRulingOptions, "")));
         require(success, "Minion::call failure");
         uint256 disputeId = parse32BytesToUint256(retData);
         require(disputes[disputeId] == 0); // 
@@ -174,20 +202,21 @@ contract DisputableMinion {
         return retData;
     }
     
+    // --- View functions
     function hasDisputeDelayDurationExpired(uint256 startingTime) public view returns (bool) {
-        return(now >= (startingTime + disputeDelayDuration)); // Change this to SafeMath-add
+        return(now >= startingTime.add(disputeDelayDuration));
     }
     
+    function isMember(address addr) public view returns(bool) {
+        (, uint256 shares, uint256 loot, , , ) = moloch.members(addr);
+        return (shares > 0 || loot > 0);
+    } 
+    
+    // --- Pure functions
     function parse32BytesToUint256(bytes memory data) pure public returns(uint256) {
         uint256 parsed;
         assembly {parsed := mload(add(data, 32))}
         return(parsed);
     }
-    
-    function isMember(address addr) public view returns(bool) {
-        (address delegateKey, uint256 shares, uint256 loot, bool exists, uint256 highestIndexYesVote, uint256 jailed) = moloch.members(addr);
-        return (shares > 0 || loot > 0);
-    } 
 
-    function() external payable { }
 }
