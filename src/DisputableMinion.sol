@@ -10,6 +10,32 @@ contract IArbitrableAragon {
     }
 }
 
+contract IArbitrator {
+    /**
+    * @dev Create a dispute over the Arbitrable sender with a number of possible rulings
+    * @param _possibleRulings Number of possible rulings allowed for the dispute
+    * @param _metadata Optional metadata that can be used to provide additional information on the dispute to be created
+    * @return Dispute identification number
+    */
+    function createDispute(uint256 _possibleRulings, bytes calldata _metadata) external payable returns (uint256);
+    /**
+    * @dev Tell the dispute fees information to create a dispute
+    * @return recipient Address where the corresponding dispute fees must be transferred to
+    * @return feeToken ERC20 token used for the fees
+    * @return feeAmount Total amount of fees that must be allowed to the recipient
+    */
+    function getDisputeFees() external view returns (address recipient, IERC20 feeToken, uint256 feeAmount);
+
+    /**
+    * @dev Tell the subscription fees information for a subscriber to be up-to-date
+    * @param _subscriber Address of the account paying the subscription fees for
+    * @return recipient Address where the corresponding subscriptions fees must be transferred to
+    * @return feeToken ERC20 token used for the subscription fees
+    * @return feeAmount Total amount of fees that must be allowed to the recipient
+    */
+    function getSubscriptionFees(address _subscriber) external view returns (address recipient, IERC20 feeToken, uint256 feeAmount);
+}
+
 contract DisputableMinion is IArbitrableAragon {
     using SafeMath for uint256;
     // --- Constants ---
@@ -40,7 +66,8 @@ contract DisputableMinion is IArbitrableAragon {
     }
     struct ADR {
         address addr;
-        bytes4 disputeMethod;   // createDispute() or relevant method for ADR chosen
+        bytes4 createDisputeMethodSig;   // createDispute() or relevant method for ADR chosen
+        bool erc20Fees;
     }
     
     // --- Events ---
@@ -55,18 +82,19 @@ contract DisputableMinion is IArbitrableAragon {
         address _moloch, 
         uint256 _disputeDelayDuration, 
         address[] memory _ADR_addr, 
-        bytes4[] memory _ADR_disputeMethod
+        bytes4[] memory _ADR_createDisputeMethodSig,
+        bool[] memory _erc20Fees
     ) 
         public 
     {
-        require(_ADR_addr.length == _ADR_disputeMethod.length);
+        require(_ADR_addr.length == _ADR_createDisputeMethodSig.length && _ADR_addr.length == _erc20Fees.length);
         moloch = Moloch(_moloch);
         molochApprovedToken = moloch.depositToken();
         disputeDelayDuration = _disputeDelayDuration;
         
         uint8 count=0;
         while(count < _ADR_addr.length) {
-            adrs.push(ADR(_ADR_addr[count], _ADR_disputeMethod[count]));
+            adrs.push(ADR(_ADR_addr[count], _ADR_createDisputeMethodSig[count], _erc20Fees[count]));
             count++;
         }
     }
@@ -153,9 +181,17 @@ contract DisputableMinion is IArbitrableAragon {
         require(!hasDisputeDelayDurationExpired(action.processingTime));
         
         ADR memory adr = adrs[_arbitratorId];
-        (bool success, bytes memory retData) = adr.addr.call.value(msg.value)(abi.encodePacked(adr.disputeMethod, abi.encode(numberOfRulingOptions, "")));
-        require(success, "Minion::call failure");
-        uint256 disputeId = parse32BytesToUint256(retData);
+        IArbitrator arbitrator = IArbitrator(adr.addr);
+        uint256 disputeId;
+        
+        // Aragon uses erc20 tokens & Kleros uses native ether for fees
+        if (adr.erc20Fees) {
+            moveTokens(adr);
+            disputeId = arbitrator.createDispute(numberOfRulingOptions, "");
+        } else {
+            disputeId = arbitrator.createDispute.value(msg.value)(numberOfRulingOptions, ""); 
+        }
+        
         require(disputes[disputeId] == 0); // 
         actions[_proposalId].disputed = true;
         actions[_proposalId].arbitratorId = _arbitratorId;
@@ -202,6 +238,14 @@ contract DisputableMinion is IArbitrableAragon {
         return retData;
     }
     
+    // 
+    function moveTokens(ADR memory _adr) internal {
+        IArbitrator arbitrator = IArbitrator(_adr.addr);
+        (, IERC20 feeToken, uint256 feeAmount) = arbitrator.getDisputeFees();
+        require(feeToken.transferFrom(msg.sender, address(this), feeAmount));
+        require(feeToken.approve(_adr.addr, feeAmount));
+    }
+    
     // --- View functions
     function hasDisputeDelayDurationExpired(uint256 startingTime) public view returns (bool) {
         return(now >= startingTime.add(disputeDelayDuration));
@@ -211,12 +255,5 @@ contract DisputableMinion is IArbitrableAragon {
         (, uint256 shares, uint256 loot, , , ) = moloch.members(addr);
         return (shares > 0 || loot > 0);
     } 
-    
-    // --- Pure functions
-    function parse32BytesToUint256(bytes memory data) pure public returns(uint256) {
-        uint256 parsed;
-        assembly {parsed := mload(add(data, 32))}
-        return(parsed);
-    }
 
 }
