@@ -1,7 +1,6 @@
 # Disputable Minion
 
-A contract that allows execution of arbitrary calls voted on by members of a Moloch DAO. Moloch 
-
+A contract that allows execution of arbitrary calls voted on by members of a Moloch DAO. Allows moloch members to dispute minion proposals using pre-defined list of arbitration services. 
 
 ## Disputable Minion Proposal Lifecycle
 1. Propose Action
