@@ -1,5 +1,17 @@
 # Disputable Minion
 
-Does a Minion introduce perverse incentives to the moloch dao structure? If you use a minion to invest some DAO assets in an external project, those assets are no longer available to members who choose to RageQuit. This breaks the cryptoeconomic alignment that makes Moloch magical. Can we maintain alignment, voice, and exit rights for while also using Moloch extensions like Minion?
+A contract that allows execution of arbitrary calls voted on by members of a Moloch DAO. Moloch 
 
 
+## Disputable Minion Proposal Lifecycle
+1. Propose Action
+2. Proposal goes to moloch contract
+	- Sponser -\> Vote -\> Process
+3. Process Action
+	- New processAction() method on minion side starts dispute delay period clock
+4. Dispute Action
+	- Moloch `share` and `loot` holders can raise a dispute and choose an arbitrator from the minion’s list of arbitrators
+5. Rule
+	- Arbitrator commits its decision in a dispute
+6. Execute Action
+	- If proposal is not disputed, execute the action once the `disputeDelayDuration` has expired
