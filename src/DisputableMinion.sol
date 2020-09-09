@@ -62,11 +62,9 @@ contract DisputableMinion is IArbitrableAragon {
         bool processed;
         uint256 processingTime;
         uint256 arbitratorId;
-        // bool[6] flags; // [sponsored, processed, didPass, cancelled, whitelist, guildkick]
     }
     struct ADR {
         address addr;
-        bytes4 createDisputeMethodSig;   // createDispute() or relevant method for ADR chosen
         bool erc20Fees;
     }
     
@@ -82,19 +80,18 @@ contract DisputableMinion is IArbitrableAragon {
         address _moloch, 
         uint256 _disputeDelayDuration, 
         address[] memory _ADR_addr, 
-        bytes4[] memory _ADR_createDisputeMethodSig,
         bool[] memory _erc20Fees
     ) 
         public 
     {
-        require(_ADR_addr.length == _ADR_createDisputeMethodSig.length && _ADR_addr.length == _erc20Fees.length);
+        require(_ADR_addr.length == _erc20Fees.length);
         moloch = Moloch(_moloch);
         molochApprovedToken = moloch.depositToken();
         disputeDelayDuration = _disputeDelayDuration;
         
         uint8 count=0;
         while(count < _ADR_addr.length) {
-            adrs.push(ADR(_ADR_addr[count], _ADR_createDisputeMethodSig[count], _erc20Fees[count]));
+            adrs.push(ADR(_ADR_addr[count], _erc20Fees[count]));
             count++;
         }
     }
@@ -175,10 +172,10 @@ contract DisputableMinion is IArbitrableAragon {
         Action memory action = actions[_proposalId];
         bool[6] memory flags = moloch.getProposalFlags(_proposalId);
         
-        require(!action.disputed); // proposal cannot already be disputed
-        require(action.processed); // proposal must have been processed on Minion side
+        require(!action.disputed, "Minion::already disputed"); // proposal cannot already be disputed
+        require(action.processed, "Minion::not processed"); // proposal must have been processed on Minion side
         require(flags[2], "Minion::proposal not passed");
-        require(!hasDisputeDelayDurationExpired(action.processingTime));
+        require(!hasDisputeDelayDurationExpired(action.processingTime), "Minion::dispute delay expired");
         
         ADR memory adr = adrs[_arbitratorId];
         IArbitrator arbitrator = IArbitrator(adr.addr);
@@ -194,6 +191,7 @@ contract DisputableMinion is IArbitrableAragon {
         
         require(disputes[disputeId] == 0); // 
         actions[_proposalId].disputed = true;
+        actions[_proposalId].disputable = false;
         actions[_proposalId].arbitratorId = _arbitratorId;
         disputes[disputeId] = _proposalId;
         
@@ -209,7 +207,7 @@ contract DisputableMinion is IArbitrableAragon {
         ADR memory adr = adrs[action.arbitratorId];
         require(adr.addr == msg.sender);              // only allow selected ADR contract
         require(action.disputed);                     // only callable if disputed
-        action.disputed = _ruling <= 1;               // no longer disputed if ruling==2
+        actions[proposalId].disputed = _ruling <= 1;               // no longer disputed if ruling==2
         
         emit ActionRuled(proposalId, msg.sender, _ruling);
     }
