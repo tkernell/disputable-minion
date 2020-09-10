@@ -1,7 +1,6 @@
 pragma solidity 0.5.12;
 
-// import "./moloch/Moloch.sol";
-import "https://github.com/raid-guild/moloch-minion/blob/develop/contracts/moloch/Moloch.sol";
+import "./moloch/Moloch.sol";
 
 contract IArbitrableAragon {
     event EvidenceSubmitted(IArbitrator indexed arbitrator, uint256 indexed disputeId, address indexed submitter, bytes evidence, bool finished);
