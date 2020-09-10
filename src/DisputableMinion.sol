@@ -4,6 +4,7 @@ pragma solidity 0.5.12;
 import "https://github.com/raid-guild/moloch-minion/blob/develop/contracts/moloch/Moloch.sol";
 
 contract IArbitrableAragon {
+    event EvidenceSubmitted(IArbitrator indexed arbitrator, uint256 indexed disputeId, address indexed submitter, bytes evidence, bool finished);
      bytes4 internal constant ARBITRABLE_INTERFACE_ID = bytes4(0x88f3ee69);
      function supportsInterface(bytes4 _interfaceId) external pure returns (bool) {
         return _interfaceId == ARBITRABLE_INTERFACE_ID;// || _interfaceId == ERC165_INTERFACE_ID;
@@ -199,6 +200,15 @@ contract DisputableMinion is IArbitrableAragon {
         return disputeId;
     }
     
+    function submitEvidence(uint256 _disputeId, bytes calldata _evidence, bool _finished) external {
+        require(isMember(msg.sender));
+        uint256 proposalId = disputes[_disputeId];
+        uint256 arbitratorId = actions[proposalId].arbitratorId;
+        IArbitrator arb = IArbitrator(adrs[arbitratorId].addr);
+        
+        emit EvidenceSubmitted(arb, _disputeId, msg.sender, _evidence, _finished);
+    } 
+    
     function rule(uint256 _disputeID, uint256 _ruling) external { // Aragon
         require(_ruling <= numberOfRulingOptions);    // valid ruling value
         uint256 proposalId = disputes[_disputeID];    
@@ -207,7 +217,7 @@ contract DisputableMinion is IArbitrableAragon {
         ADR memory adr = adrs[action.arbitratorId];
         require(adr.addr == msg.sender);              // only allow selected ADR contract
         require(action.disputed);                     // only callable if disputed
-        actions[proposalId].disputed = _ruling <= 1;               // no longer disputed if ruling==2
+        actions[proposalId].disputed = _ruling <= 3;               // no longer disputed if ruling==4
         
         emit ActionRuled(proposalId, msg.sender, _ruling);
     }
@@ -239,9 +249,9 @@ contract DisputableMinion is IArbitrableAragon {
     // 
     function moveTokens(ADR memory _adr) internal {
         IArbitrator arbitrator = IArbitrator(_adr.addr);
-        (, IERC20 feeToken, uint256 feeAmount) = arbitrator.getDisputeFees();
+        (address disputeFeeRecipient, IERC20 feeToken, uint256 feeAmount) = arbitrator.getDisputeFees();
         require(feeToken.transferFrom(msg.sender, address(this), feeAmount));
-        require(feeToken.approve(_adr.addr, feeAmount));
+        require(feeToken.approve(disputeFeeRecipient, feeAmount));
     }
     
     // --- View functions
