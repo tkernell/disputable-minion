@@ -1,54 +1,42 @@
 pragma solidity 0.5.12;
 
-// import "./moloch/Moloch.sol";
-import "https://github.com/raid-guild/moloch-minion/blob/develop/contracts/moloch/Moloch.sol";
+import "./moloch/Moloch.sol";
 
 contract IArbitrableAragon {
-     bytes4 internal constant ARBITRABLE_INTERFACE_ID = bytes4(0x88f3ee69);
-     function supportsInterface(bytes4 _interfaceId) external pure returns (bool) {
+    event EvidenceSubmitted(IArbitrator indexed arbitrator, uint256 indexed disputeId, address indexed submitter, bytes evidence, bool finished);
+    
+    bytes4 internal constant ARBITRABLE_INTERFACE_ID = bytes4(0x88f3ee69);
+    
+    function supportsInterface(bytes4 _interfaceId) external pure returns (bool) {
         return _interfaceId == ARBITRABLE_INTERFACE_ID;// || _interfaceId == ERC165_INTERFACE_ID;
     }
 }
 
 contract IArbitrator {
-    /**
-    * @dev Create a dispute over the Arbitrable sender with a number of possible rulings
-    * @param _possibleRulings Number of possible rulings allowed for the dispute
-    * @param _metadata Optional metadata that can be used to provide additional information on the dispute to be created
-    * @return Dispute identification number
-    */
+    
     function createDispute(uint256 _possibleRulings, bytes calldata _metadata) external payable returns (uint256);
-    /**
-    * @dev Tell the dispute fees information to create a dispute
-    * @return recipient Address where the corresponding dispute fees must be transferred to
-    * @return feeToken ERC20 token used for the fees
-    * @return feeAmount Total amount of fees that must be allowed to the recipient
-    */
+    
     function getDisputeFees() external view returns (address recipient, IERC20 feeToken, uint256 feeAmount);
 
-    /**
-    * @dev Tell the subscription fees information for a subscriber to be up-to-date
-    * @param _subscriber Address of the account paying the subscription fees for
-    * @return recipient Address where the corresponding subscriptions fees must be transferred to
-    * @return feeToken ERC20 token used for the subscription fees
-    * @return feeAmount Total amount of fees that must be allowed to the recipient
-    */
     function getSubscriptionFees(address _subscriber) external view returns (address recipient, IERC20 feeToken, uint256 feeAmount);
 }
 
 contract DisputableMinion is IArbitrableAragon {
     using SafeMath for uint256;
+    
     // --- Constants ---
     string public constant MINION_ACTION_DETAILS = '{"isMinion": true, "title":"MINION", "description":"';
-    uint constant numberOfRulingOptions = 2; // RefusedToArbitrate, ProposalInvalid, ProposalValid
+    
+    uint256 internal constant DISPUTES_POSSIBLE_OUTCOMES = 2;
+    uint256 internal constant DISPUTES_RULING_CHALLENGER = 3;
+    uint256 internal constant DISPUTES_RULING_SUBMITTER = 4;
 
     // --- State and data structures ---
     Moloch public moloch;
     address public molochApprovedToken;
     uint256 public disputeDelayDuration;
-    enum RulingOptions {RefusedToArbitrate, ProposalInvalid, ProposalValid} // Necessary?
     mapping (uint256 => Action) public actions; // proposalId => Action
-    mapping (uint256 => uint256) public disputes; // used for rule() method
+    mapping (uint256 => uint256) public disputes; // disputeId => proposalId
     ADR[] public adrs;
 
     struct Action {
@@ -60,6 +48,7 @@ contract DisputableMinion is IArbitrableAragon {
         bool disputed;
         bool disputable;
         bool processed;
+        bool ruled;
         uint256 processingTime;
         uint256 arbitratorId;
     }
@@ -140,7 +129,8 @@ contract DisputableMinion is IArbitrableAragon {
             processed: false,
             processingTime: now,
             arbitratorId: 257,
-            disputable: false
+            disputable: false,
+            ruled: false
         });
 
         actions[proposalId] = action;
@@ -184,12 +174,12 @@ contract DisputableMinion is IArbitrableAragon {
         // Aragon uses erc20 tokens & Kleros uses native ether for fees
         if (adr.erc20Fees) {
             moveTokens(adr);
-            disputeId = arbitrator.createDispute(numberOfRulingOptions, "");
+            disputeId = arbitrator.createDispute(DISPUTES_POSSIBLE_OUTCOMES, "");
         } else {
-            disputeId = arbitrator.createDispute.value(msg.value)(numberOfRulingOptions, ""); 
+            disputeId = arbitrator.createDispute.value(msg.value)(DISPUTES_POSSIBLE_OUTCOMES, ""); 
         }
         
-        require(disputes[disputeId] == 0); // 
+        require(disputes[disputeId] == 0, "Minion::disputeId already used");
         actions[_proposalId].disputed = true;
         actions[_proposalId].disputable = false;
         actions[_proposalId].arbitratorId = _arbitratorId;
@@ -199,16 +189,27 @@ contract DisputableMinion is IArbitrableAragon {
         return disputeId;
     }
     
+    function submitEvidence(uint256 _disputeId, bytes calldata _evidence, bool _finished) external {
+        require(isMember(msg.sender));
+        uint256 proposalId = disputes[_disputeId];
+        uint256 arbitratorId = actions[proposalId].arbitratorId;
+        IArbitrator arb = IArbitrator(adrs[arbitratorId].addr);
+        
+        emit EvidenceSubmitted(arb, _disputeId, msg.sender, _evidence, _finished);
+    } 
+    
     function rule(uint256 _disputeID, uint256 _ruling) external { // Aragon
-        require(_ruling <= numberOfRulingOptions);    // valid ruling value
+        require(_ruling <= DISPUTES_RULING_SUBMITTER, "Minion::invalid ruling value");    // valid ruling value
         uint256 proposalId = disputes[_disputeID];    
-        require(proposalId != 0);       // Reconsider?
+        require(proposalId != 0, "Minion::dispute nonexistent");       // Reconsider?
         Action memory action = actions[proposalId];
         ADR memory adr = adrs[action.arbitratorId];
-        require(adr.addr == msg.sender);              // only allow selected ADR contract
-        require(action.disputed);                     // only callable if disputed
-        actions[proposalId].disputed = _ruling <= 1;               // no longer disputed if ruling==2
+        require(adr.addr == msg.sender, "Minion::only arbitrator can rule");              // only allow selected ADR contract
+        require(action.disputed, "Minion::action not disputed");                     // only callable if disputed
+        require(!action.ruled, "Minion::action already ruled");
         
+        actions[proposalId].disputed = _ruling != DISPUTES_RULING_SUBMITTER;               // no longer disputed if ruling==4
+   
         emit ActionRuled(proposalId, msg.sender, _ruling);
     }
     
@@ -236,12 +237,11 @@ contract DisputableMinion is IArbitrableAragon {
         return retData;
     }
     
-    // 
     function moveTokens(ADR memory _adr) internal {
         IArbitrator arbitrator = IArbitrator(_adr.addr);
-        (, IERC20 feeToken, uint256 feeAmount) = arbitrator.getDisputeFees();
+        (address disputeFeeRecipient, IERC20 feeToken, uint256 feeAmount) = arbitrator.getDisputeFees();
         require(feeToken.transferFrom(msg.sender, address(this), feeAmount));
-        require(feeToken.approve(_adr.addr, feeAmount));
+        require(feeToken.approve(disputeFeeRecipient, feeAmount));
     }
     
     // --- View functions
