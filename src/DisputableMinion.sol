@@ -1,6 +1,7 @@
 pragma solidity 0.5.12;
 
-import "./moloch/Moloch.sol";
+// import "./moloch/Moloch.sol";
+import "https://github.com/raid-guild/moloch-minion/blob/develop/contracts/moloch/Moloch.sol";
 
 contract IArbitrableAragon {
     event EvidenceSubmitted(IArbitrator indexed arbitrator, uint256 indexed disputeId, address indexed submitter, bytes evidence, bool finished);
@@ -35,7 +36,11 @@ contract DisputableMinion is IArbitrableAragon {
     Moloch public moloch;
     address public molochApprovedToken;
     uint256 public disputeDelayDuration;
+    uint256 public challengeDelayDuration;
+    address public actionDepositToken;
+    uint256 public actionDepositTokenAmount;
     mapping (uint256 => Action) public actions; // proposalId => Action
+    mapping (uint256 => Challenge) public challenges; // proposalId => Challenge
     mapping (uint256 => uint256) public disputes; // disputeId => proposalId
     ADR[] public adrs;
 
@@ -48,9 +53,17 @@ contract DisputableMinion is IArbitrableAragon {
         bool disputed;
         bool disputable;
         bool processed;
+        bool challenged;
         bool ruled;
         uint256 processingTime;
         uint256 arbitratorId;
+    }
+    struct Challenge {
+        address submitter;
+        address challenger;
+        uint256 balance;
+        uint256 state;
+        bytes context;
     }
     struct ADR {
         address addr;
@@ -60,6 +73,7 @@ contract DisputableMinion is IArbitrableAragon {
     // --- Events ---
     event ActionProposed(uint256 proposalId, address proposer);
     event ActionProcessed(uint256 proposalId, address processor);
+    event ActionChallenged(uint256 proposalId, address challenger);
     event ActionDisputed(uint256 proposalId, address disputant, uint256 disputeId);
     event ActionRuled(uint256 proposalId, address arbitrator, uint256 ruling);
     event ActionExecuted(uint256 proposalId, address executor);
@@ -69,7 +83,9 @@ contract DisputableMinion is IArbitrableAragon {
         address _moloch, 
         uint256 _disputeDelayDuration, 
         address[] memory _ADR_addr, 
-        bool[] memory _erc20Fees
+        bool[] memory _erc20Fees,
+        address _actionDepositToken,
+        uint256 _actionDepositTokenAmount
     ) 
         public 
     {
@@ -77,6 +93,8 @@ contract DisputableMinion is IArbitrableAragon {
         moloch = Moloch(_moloch);
         molochApprovedToken = moloch.depositToken();
         disputeDelayDuration = _disputeDelayDuration;
+        actionDepositToken = _actionDepositToken;
+        actionDepositTokenAmount = _actionDepositTokenAmount;
         
         uint8 count=0;
         while(count < _ADR_addr.length) {
@@ -105,6 +123,9 @@ contract DisputableMinion is IArbitrableAragon {
         // No calls to zero address allows us to check that Minion submitted
         // the proposal without getting the proposal struct from the moloch
         require(_actionTo != address(0), "Minion::invalid _actionTo");
+        
+        IERC20 depositToken = IERC20(actionDepositToken);
+        require(depositToken.transferFrom(msg.sender, address(this), actionDepositTokenAmount));
 
         string memory details = string(abi.encodePacked(MINION_ACTION_DETAILS, _description, '"}'));
 
@@ -127,6 +148,7 @@ contract DisputableMinion is IArbitrableAragon {
             data: _actionData,
             disputed: false,
             processed: false,
+            challenged: false,
             processingTime: now,
             arbitratorId: 257,
             disputable: false,
@@ -134,6 +156,16 @@ contract DisputableMinion is IArbitrableAragon {
         });
 
         actions[proposalId] = action;
+        
+        Challenge memory challenge = Challenge({
+            submitter: msg.sender,
+            challenger: address(0x0),
+            balance: actionDepositTokenAmount,
+            state: 0,
+            context: '0' 
+        });
+        
+        challenges[proposalId] = challenge;
 
         emit ActionProposed(proposalId, msg.sender);
         return proposalId;
@@ -157,6 +189,26 @@ contract DisputableMinion is IArbitrableAragon {
         emit ActionProcessed(_proposalId, msg.sender);
     }
     
+    function challengeAction(uint256 _proposalId, bytes memory _context) public {
+        require(isMember(msg.sender), "Minion::not a member");
+        Action memory action = actions[_proposalId];
+        require(action.processed, "Minion::action not processed");
+        require(!hasDisputeDelayDurationExpired(action.processingTime), "Minion::dispute delay expired");
+        Challenge memory challenge = challenges[_proposalId];
+        require(challenge.state == 0, "Minion::already challenged");
+        
+        IERC20 depositToken = IERC20(actionDepositToken);
+        uint256 challengerDepositAmount = actionDepositTokenAmount.mul(2);
+        require(depositToken.transferFrom(msg.sender, address(this), challengerDepositAmount), "Minion::unable to transfer deposit token");
+        challenge.balance += challengerDepositAmount;
+        challenge.challenger = msg.sender;
+        challenge.state = 1;
+        challenge.context = _context;
+        
+        challenges[_proposalId] = challenge;
+        emit ActionChallenged(_proposalId, msg.sender);
+    }
+    
     function disputeAction(uint256 _proposalId, uint256 _arbitratorId) public payable returns(uint256) {
         require(isMember(msg.sender), "Minion::not a member");  // only moloch share or loot holders
         Action memory action = actions[_proposalId];
@@ -167,13 +219,18 @@ contract DisputableMinion is IArbitrableAragon {
         require(flags[2], "Minion::proposal not passed");
         require(!hasDisputeDelayDurationExpired(action.processingTime), "Minion::dispute delay expired");
         
+        Challenge memory challenge = challenges[_proposalId];
+        require(challenge.state == 1, "Minion::action not challenged");
+        IERC20 depositToken = IERC20(actionDepositToken);
+        require(depositToken.transferFrom(msg.sender, address(this), actionDepositTokenAmount), "Minion::unable to transfer deposit token");
+        
         ADR memory adr = adrs[_arbitratorId];
         IArbitrator arbitrator = IArbitrator(adr.addr);
         uint256 disputeId;
         
         // Aragon uses erc20 tokens & Kleros uses native ether for fees
         if (adr.erc20Fees) {
-            moveTokens(adr);
+            moveTokens(_proposalId, adr);
             disputeId = arbitrator.createDispute(DISPUTES_POSSIBLE_OUTCOMES, "");
         } else {
             disputeId = arbitrator.createDispute.value(msg.value)(DISPUTES_POSSIBLE_OUTCOMES, ""); 
@@ -184,6 +241,8 @@ contract DisputableMinion is IArbitrableAragon {
         actions[_proposalId].disputable = false;
         actions[_proposalId].arbitratorId = _arbitratorId;
         disputes[disputeId] = _proposalId;
+        
+        challenges[_proposalId].state = 2;
         
         emit ActionDisputed(_proposalId, msg.sender, disputeId);
         return disputeId;
@@ -198,14 +257,14 @@ contract DisputableMinion is IArbitrableAragon {
         emit EvidenceSubmitted(arb, _disputeId, msg.sender, _evidence, _finished);
     } 
     
-    function rule(uint256 _disputeID, uint256 _ruling) external { // Aragon
+    function rule(uint256 _disputeID, uint256 _ruling) external { 
         require(_ruling <= DISPUTES_RULING_SUBMITTER, "Minion::invalid ruling value");    // valid ruling value
         uint256 proposalId = disputes[_disputeID];    
         require(proposalId != 0, "Minion::dispute nonexistent");       // Reconsider?
         Action memory action = actions[proposalId];
         ADR memory adr = adrs[action.arbitratorId];
         require(adr.addr == msg.sender, "Minion::only arbitrator can rule");              // only allow selected ADR contract
-        require(action.disputed, "Minion::action not disputed");                     // only callable if disputed
+        require(action.disputed, "Minion::action not disputed");                          // only callable if disputed
         require(!action.ruled, "Minion::action already ruled");
         
         actions[proposalId].disputed = _ruling != DISPUTES_RULING_SUBMITTER;               // no longer disputed if ruling==4
@@ -228,7 +287,6 @@ contract DisputableMinion is IArbitrableAragon {
         require(!action.disputed, "Minion::action disputed");
         require(hasDisputeDelayDurationExpired(action.processingTime));
         
-
         // execute call
         actions[_proposalId].executed = true;
         (bool success, bytes memory retData) = action.to.call.value(action.value)(action.data);
@@ -237,11 +295,25 @@ contract DisputableMinion is IArbitrableAragon {
         return retData;
     }
     
-    function moveTokens(ADR memory _adr) internal {
+    function moveTokens1(ADR memory _adr) internal {
         IArbitrator arbitrator = IArbitrator(_adr.addr);
         (address disputeFeeRecipient, IERC20 feeToken, uint256 feeAmount) = arbitrator.getDisputeFees();
         require(feeToken.transferFrom(msg.sender, address(this), feeAmount));
         require(feeToken.approve(disputeFeeRecipient, feeAmount));
+    }
+    
+    function moveTokens(uint256 _proposalId, ADR memory _adr) internal {
+        IArbitrator arbitrator = IArbitrator(_adr.addr);
+        (address disputeFeeRecipient, IERC20 feeToken, uint256 feeAmount) = arbitrator.getDisputeFees();
+        
+        if (address(feeToken) != actionDepositToken) {
+            require(feeToken.transferFrom(msg.sender, address(this), feeAmount));
+        } else {
+            uint256 challengeBalance = challenges[_proposalId].balance;
+            challenges[_proposalId].balance = challengeBalance.sub(feeAmount);
+        }
+        
+        require(feeToken.approve(disputeFeeRecipient, feeAmount)); 
     }
     
     // --- View functions
