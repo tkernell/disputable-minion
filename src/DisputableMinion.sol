@@ -62,7 +62,8 @@ contract DisputableMinion is IArbitrableAragon {
         address submitter;
         address challenger;
         uint256 balance;
-        uint256 state;
+        uint256 state; // 0. proposed 1. challenged 2. disputed 3. ruled for challenger 4. ruled for submitter
+        uint256 challengeTime;
         bytes context;
     }
     struct ADR {
@@ -162,6 +163,7 @@ contract DisputableMinion is IArbitrableAragon {
             challenger: address(0x0),
             balance: actionDepositTokenAmount,
             state: 0,
+            challengeTime: 0,
             context: '0' 
         });
         
@@ -193,7 +195,7 @@ contract DisputableMinion is IArbitrableAragon {
         require(isMember(msg.sender), "Minion::not a member");
         Action memory action = actions[_proposalId];
         require(action.processed, "Minion::action not processed");
-        require(!hasDisputeDelayDurationExpired(action.processingTime), "Minion::dispute delay expired");
+        require(!hasDisputeDelayDurationExpired(_proposalId), "Minion::dispute delay expired");
         Challenge memory challenge = challenges[_proposalId];
         require(challenge.state == 0, "Minion::already challenged");
         
@@ -204,6 +206,7 @@ contract DisputableMinion is IArbitrableAragon {
         challenge.challenger = msg.sender;
         challenge.state = 1;
         challenge.context = _context;
+        challenge.challengeTime = now;
         
         challenges[_proposalId] = challenge;
         emit ActionChallenged(_proposalId, msg.sender);
@@ -217,7 +220,7 @@ contract DisputableMinion is IArbitrableAragon {
         require(!action.disputed, "Minion::already disputed"); // proposal cannot already be disputed
         require(action.processed, "Minion::not processed"); // proposal must have been processed on Minion side
         require(flags[2], "Minion::proposal not passed");
-        require(!hasDisputeDelayDurationExpired(action.processingTime), "Minion::dispute delay expired");
+        require(!hasDisputeDelayDurationExpired(_proposalId), "Minion::dispute delay expired");
         
         Challenge memory challenge = challenges[_proposalId];
         require(challenge.state == 1, "Minion::action not challenged");
@@ -268,6 +271,11 @@ contract DisputableMinion is IArbitrableAragon {
         require(!action.ruled, "Minion::action already ruled");
         
         actions[proposalId].disputed = _ruling != DISPUTES_RULING_SUBMITTER;               // no longer disputed if ruling==4
+        if (actions[proposalId].disputed) {
+            challenges[proposalId].state = 3;
+        } else {
+            challenges[proposalId].state = 4;
+        }
    
         emit ActionRuled(proposalId, msg.sender, _ruling);
     }
@@ -285,7 +293,7 @@ contract DisputableMinion is IArbitrableAragon {
         require(flags[2], "Minion::proposal not passed");
         require(action.processed, "Minion::action not processed");
         require(!action.disputed, "Minion::action disputed");
-        require(hasDisputeDelayDurationExpired(action.processingTime));
+        require(hasDisputeDelayDurationExpired(_proposalId));
         
         // execute call
         actions[_proposalId].executed = true;
@@ -295,12 +303,27 @@ contract DisputableMinion is IArbitrableAragon {
         return retData;
     }
     
-    function moveTokens1(ADR memory _adr) internal {
-        IArbitrator arbitrator = IArbitrator(_adr.addr);
-        (address disputeFeeRecipient, IERC20 feeToken, uint256 feeAmount) = arbitrator.getDisputeFees();
-        require(feeToken.transferFrom(msg.sender, address(this), feeAmount));
-        require(feeToken.approve(disputeFeeRecipient, feeAmount));
+    function withdrawDeposit(uint256 _proposalId) public {
+        Challenge memory challenge = challenges[_proposalId];
+        require(challenge.state != 2, "Minion::waiting to be ruled");
+        require(hasDisputeDelayDurationExpired(_proposalId), "Minion::dispute delay period not expired");
+        require(challenge.balance > 0);
+        if (challenge.state == 4 || challenge.state == 0) {
+            require(msg.sender == challenge.submitter, "Minion::only submitter can withdraw");
+            _withdrawDeposit(_proposalId, challenge.submitter, challenge.balance);
+        } else if (challenge.state == 3 || challenge.state == 1) {
+            require(msg.sender == challenge.challenger);
+            _withdrawDeposit(_proposalId, challenge.challenger, challenge.balance);
+        }
+        
+        challenges[_proposalId].balance = 0;
     }
+    
+    function _withdrawDeposit(uint256 _proposalId, address addr, uint256 bal) internal {
+        IERC20 depositToken = IERC20(actionDepositToken);
+        depositToken.approve(addr, bal);
+    }
+
     
     function moveTokens(uint256 _proposalId, ADR memory _adr) internal {
         IArbitrator arbitrator = IArbitrator(_adr.addr);
@@ -317,8 +340,11 @@ contract DisputableMinion is IArbitrableAragon {
     }
     
     // --- View functions
-    function hasDisputeDelayDurationExpired(uint256 startingTime) public view returns (bool) {
-        return(now >= startingTime.add(disputeDelayDuration));
+    function hasDisputeDelayDurationExpired(uint256 _proposalId) public view returns (bool) {
+        uint256 pts = actions[_proposalId].processingTime;
+        uint256 cts = challenges[_proposalId].challengeTime;
+        
+        return (now > pts.add(disputeDelayDuration) && now > cts.add(challengeDelayDuration));
     }
     
     function isMember(address addr) public view returns(bool) {
