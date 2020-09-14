@@ -150,7 +150,7 @@ contract DisputableMinion is IArbitrableAragon {
             disputed: false,
             processed: false,
             challenged: false,
-            processingTime: now,
+            processingTime: 0,
             arbitratorId: 257,
             disputable: false,
             ruled: false
@@ -212,7 +212,7 @@ contract DisputableMinion is IArbitrableAragon {
         emit ActionChallenged(_proposalId, msg.sender);
     }
     
-    function disputeAction(uint256 _proposalId, uint256 _arbitratorId) public payable returns(uint256) {
+    function disputeAction(uint256 _proposalId, uint256 _arbitratorId, bytes memory _metadata) public payable returns(uint256) {
         require(isMember(msg.sender), "Minion::not a member");  // only moloch share or loot holders
         Action memory action = actions[_proposalId];
         bool[6] memory flags = moloch.getProposalFlags(_proposalId);
@@ -234,9 +234,9 @@ contract DisputableMinion is IArbitrableAragon {
         // Aragon uses erc20 tokens & Kleros uses native ether for fees
         if (adr.erc20Fees) {
             moveTokens(_proposalId, adr);
-            disputeId = arbitrator.createDispute(DISPUTES_POSSIBLE_OUTCOMES, "");
+            disputeId = arbitrator.createDispute(DISPUTES_POSSIBLE_OUTCOMES, _metadata);
         } else {
-            disputeId = arbitrator.createDispute.value(msg.value)(DISPUTES_POSSIBLE_OUTCOMES, ""); 
+            disputeId = arbitrator.createDispute.value(msg.value)(DISPUTES_POSSIBLE_OUTCOMES, _metadata); 
         }
         
         require(disputes[disputeId] == 0, "Minion::disputeId already used");
